@@ -139,6 +139,7 @@ def valid_terabox(url):
         or "terasharefile" in text
     )
 
+
 def call_api(url):
 
     headers = {
@@ -201,7 +202,9 @@ def start(msg):
 
     if prime_active(user):
 
-        plan = f"💎 PRIME ACTIVE"
+        expiry = user["prime_expiry"].strftime("%d-%m-%Y")
+
+        plan = f"💎 PRIME ACTIVE\n📆 VALID : {expiry}"
 
     else:
 
@@ -247,6 +250,32 @@ def start(msg):
 
 /prime - Buy Prime
 /me - My Account
+/help - Help Menu
+
+━━━━━━━━━━━━━━━
+"""
+
+    bot.reply_to(msg, text)
+
+# ================= HELP =================
+
+@bot.message_handler(commands=["help"])
+def help_cmd(msg):
+
+    text = """
+📌 HOW TO USE
+
+1️⃣ TeraBox link bhejo
+2️⃣ Bot direct player link dega
+3️⃣ Free limit ke baad Prime lo
+
+━━━━━━━━━━━━━━━
+
+💎 PRIME BENEFITS
+
+⚡ Unlimited Links
+⚡ Fast Stream
+⚡ No Free Limit
 
 ━━━━━━━━━━━━━━━
 """
@@ -286,12 +315,6 @@ def me(msg):
 👥 Referral Bonus : +{total_bonus}
 
 ━━━━━━━━━━━━━━━
-
-💎 ₹50  → 1 MONTH
-💎 ₹100 → 2 MONTH
-💎 ₹250 → 3 MONTH
-
-━━━━━━━━━━━━━━━
 """
 
     bot.reply_to(msg, text)
@@ -320,14 +343,14 @@ def prime(msg):
         )
     )
 
-    text = f"""
+    text = """
 💎 𝗣𝗥𝗜𝗠𝗘 𝗣𝗟𝗔𝗡𝗦
 
 ━━━━━━━━━━━━━━━
 
-💰 ₹50  →  1 MONTH
-💰 ₹100 →  2 MONTH
-💰 ₹250 →  3 MONTH
+💰 ₹50  → 1 MONTH
+💰 ₹100 → 2 MONTH
+💰 ₹250 → 3 MONTH
 
 ━━━━━━━━━━━━━━━
 
@@ -404,7 +427,10 @@ def buy_plan(call):
 
 # ================= HANDLE LINK =================
 
-@bot.message_handler(func=lambda m: True)
+@bot.message_handler(func=lambda m: (
+    m.text
+    and not m.text.startswith("/")
+))
 def handle_link(msg):
 
     text = msg.text.strip()
