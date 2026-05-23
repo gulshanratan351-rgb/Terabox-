@@ -19,9 +19,6 @@ MONGO_URI = os.getenv("MONGO_URI")
 
 BASE_URL = os.getenv("BASE_URL")
 
-TERABOX_API_URL = os.getenv("TERABOX_API_URL")
-TERABOX_API_KEY = os.getenv("TERABOX_API_KEY")
-
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 
@@ -140,40 +137,14 @@ def valid_terabox(url):
     )
 
 
+# ================= TEMP DIRECT PLAYER =================
+# Real API milne tak direct link open hoga
+
 def call_api(url):
 
-    headers = {
-        "Authorization": f"Bearer {TERABOX_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "url": url
-    }
-
-    r = requests.post(
-        TERABOX_API_URL,
-        json=payload,
-        headers=headers,
-        timeout=40
-    )
-
-    r.raise_for_status()
-
-    data = r.json()
-
-    play_url = (
-        data.get("play_url")
-        or data.get("stream_url")
-        or data.get("url")
-    )
-
-    if not play_url:
-        raise Exception("play_url missing")
-
     return {
-        "title": data.get("title", "TeraBox Video"),
-        "play_url": play_url
+        "title": "TeraBox Video",
+        "play_url": url
     }
 
 # ================= START =================
