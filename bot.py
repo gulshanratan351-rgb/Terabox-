@@ -1,7 +1,6 @@
 import os, uuid, requests, razorpay
 from datetime import datetime, timedelta
 from threading import Thread
-
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
@@ -10,10 +9,8 @@ from flask import Flask, request, jsonify, redirect
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BASE_URL = os.getenv("BASE_URL")
-
 TERABOX_API_URL = os.getenv("TERABOX_API_URL")
 TERABOX_API_KEY = os.getenv("TERABOX_API_KEY")
-
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 
@@ -31,7 +28,6 @@ app = Flask(__name__)
 
 mongo = MongoClient(MONGO_URI)
 db = mongo["terabox_prime_bot"]
-
 users_col = db["users"]
 links_col = db["links"]
 orders_col = db["orders"]
@@ -41,7 +37,6 @@ razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 def get_user(user, ref_by=None):
     data = users_col.find_one({"user_id": user.id})
-
     if not data:
         data = {
             "user_id": user.id,
@@ -74,47 +69,87 @@ def prime_active(data):
 
 
 def valid_terabox(url):
-    text = url.lower()
-    return (
-        "terabox" in text
-        or "1024tera" in text
-        or "terafileshare" in text
-        or "terasharefile" in text
-    )
+    t = url.lower()
+    return "terabox" in t or "1024tera" in t or "terafileshare" in t or "terasharefile" in t
+
+
+def find_video_url(data):
+    if isinstance(data, dict):
+        for key in ["play_url", "stream_url", "direct_url", "video_url", "download_url", "url", "link"]:
+            val = data.get(key)
+            if isinstance(val, str) and val.startswith("http"):
+                return val
+
+        for key in ["data", "result", "file", "video"]:
+            val = data.get(key)
+            found = find_video_url(val)
+            if found:
+                return found
+
+    if isinstance(data, list):
+        for item in data:
+            found = find_video_url(item)
+            if found:
+                return found
+
+    return None
 
 
 def call_api(url):
     headers = {
         "Authorization": f"Bearer {TERABOX_API_KEY}",
+        "X-API-Key": TERABOX_API_KEY,
+        "User-Agent": "Mozilla/5.0",
         "Content-Type": "application/json"
     }
 
-    r = requests.post(
-        TERABOX_API_URL,
-        json={"url": url},
-        headers=headers,
-        timeout=60
-    )
+    attempts = [
+        requests.post(
+            TERABOX_API_URL,
+            json={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
+            headers=headers,
+            timeout=60
+        ),
+        requests.post(
+            TERABOX_API_URL,
+            data={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=60
+        ),
+        requests.get(
+            TERABOX_API_URL,
+            params={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=60
+        )
+    ]
 
-    r.raise_for_status()
-    data = r.json()
+    last_text = ""
 
-    play_url = (
-        data.get("play_url")
-        or data.get("stream_url")
-        or data.get("direct_url")
-        or data.get("video_url")
-        or data.get("url")
-    )
+    for r in attempts:
+        last_text = r.text[:700]
+        if r.status_code >= 400:
+            continue
 
-    if not play_url:
-        raise Exception(f"play_url missing: {data}")
+        try:
+            data = r.json()
+        except:
+            continue
 
-    return {
-        "title": data.get("title", "TeraBox Video"),
-        "play_url": play_url,
-        "thumbnail": data.get("thumbnail", "")
-    }
+        play_url = find_video_url(data)
+
+        if play_url:
+            title = "TeraBox Video"
+            if isinstance(data, dict):
+                title = data.get("title") or data.get("name") or data.get("filename") or title
+
+            return {
+                "title": title,
+                "play_url": play_url,
+                "raw": data
+            }
+
+    raise Exception(f"API direct video URL nahi de rahi. Response: {last_text}")
 
 
 @bot.message_handler(commands=["start"])
@@ -129,59 +164,43 @@ def start(msg):
             pass
 
     user = get_user(msg.from_user, ref_by)
+    total_limit = FREE_LIMIT + user.get("referral_bonus", 0)
     bot_username = bot.get_me().username
     ref_link = f"https://t.me/{bot_username}?start={msg.from_user.id}"
 
-    total_limit = FREE_LIMIT + user.get("referral_bonus", 0)
-
-    text = f"""
+    bot.reply_to(msg, f"""
 🔥 𝗧𝗘𝗥𝗔𝗕𝗢𝗫 𝗧𝗢 𝗩𝗜𝗗𝗘𝗢 𝗕𝗢𝗧 🔥
 
-🎬 TeraBox link भेजो
-▶️ Bot में ही video play होगा
-
-━━━━━━━━━━━━━━━
+🎬 TeraBox link bhejo
+▶️ Bot player me video open hoga
 
 🎁 Free Used: {user.get("free_used", 0)}/{total_limit}
 👥 Referral Bonus: +{user.get("referral_bonus", 0)}
 
-━━━━━━━━━━━━━━━
-
-🔗 Your Referral Link:
+🔗 Referral Link:
 {ref_link}
 
 📌 1 Referral = 1 Extra Link
 
-━━━━━━━━━━━━━━━
-
-💎 Prime Plans:
-₹50  → 1 Month
-₹100 → 2 Month
-₹250 → 3 Month
-
 /prime - Buy Prime
 /me - My Account
 /help - Help
-"""
-    bot.reply_to(msg, text)
+/apitest LINK - API test
+""")
 
 
 @bot.message_handler(commands=["help"])
 def help_cmd(msg):
-    bot.reply_to(
-        msg,
-        """
+    bot.reply_to(msg, """
 📌 HOW TO USE
 
-1️⃣ TeraBox link भेजो
-2️⃣ Bot video process करेगा
-3️⃣ Video bot में play होगा
-4️⃣ Free limit के बाद Prime लेना होगा
+1️⃣ TeraBox link bhejo
+2️⃣ Bot video process karega
+3️⃣ Play button par click karo
 
-/prime - Prime Plans
-/me - Account
-"""
-    )
+💎 Prime:
+/prime
+""")
 
 
 @bot.message_handler(commands=["me"])
@@ -197,6 +216,29 @@ def me(msg):
     bot.reply_to(msg, text)
 
 
+@bot.message_handler(commands=["apitest"])
+def apitest(msg):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return bot.reply_to(msg, "Use: /apitest TERABOX_LINK")
+
+    wait = bot.reply_to(msg, "⏳ API testing...")
+
+    try:
+        api_data = call_api(parts[1])
+        bot.edit_message_text(
+            chat_id=msg.chat.id,
+            message_id=wait.message_id,
+            text=f"✅ API OK\n\nTitle: {api_data['title']}\n\nURL:\n{api_data['play_url'][:300]}"
+        )
+    except Exception as e:
+        bot.edit_message_text(
+            chat_id=msg.chat.id,
+            message_id=wait.message_id,
+            text=f"❌ API TEST FAILED\n\n{str(e)[:1000]}"
+        )
+
+
 @bot.message_handler(commands=["prime"])
 def prime(msg):
     kb = InlineKeyboardMarkup(row_width=1)
@@ -206,19 +248,13 @@ def prime(msg):
         InlineKeyboardButton("💎 3 MONTH - ₹250", callback_data="buy_3month")
     )
 
-    bot.reply_to(
-        msg,
-        """
+    bot.reply_to(msg, """
 💎 𝗣𝗥𝗜𝗠𝗘 𝗣𝗟𝗔𝗡𝗦
 
 ₹50  → 1 MONTH
 ₹100 → 2 MONTH
 ₹250 → 3 MONTH
-
-👇 Plan choose karo
-""",
-        reply_markup=kb
-    )
+""", reply_markup=kb)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
@@ -229,41 +265,36 @@ def buy_plan(call):
     if not plan:
         return
 
-    order_id = str(uuid.uuid4())[:10]
+    receipt_id = str(uuid.uuid4())[:10]
 
-    razorpay_order = razorpay_client.order.create({
+    rz_order = razorpay_client.order.create({
         "amount": plan["price"] * 100,
         "currency": "INR",
-        "receipt": order_id,
+        "receipt": receipt_id,
         "payment_capture": 1
     })
 
     orders_col.insert_one({
-        "order_id": order_id,
-        "razorpay_order_id": razorpay_order["id"],
+        "receipt_id": receipt_id,
+        "razorpay_order_id": rz_order["id"],
         "user_id": call.from_user.id,
         "plan": plan_key,
         "days": plan["days"],
+        "price": plan["price"],
         "status": "pending",
         "created_at": datetime.utcnow()
     })
 
-    pay_url = f"https://checkout.razorpay.com/v1/checkout/embedded?order_id={razorpay_order['id']}"
-
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"💳 PAY ₹{plan['price']}", url=pay_url))
+    kb.add(InlineKeyboardButton(f"💳 PAY ₹{plan['price']}", url=f"{BASE_URL}/pay/{rz_order['id']}"))
 
-    bot.send_message(
-        call.message.chat.id,
-        f"""
+    bot.send_message(call.message.chat.id, f"""
 💎 𝗣𝗥𝗜𝗠𝗘 𝗣𝗟𝗔𝗡
 
 📦 Plan: {plan['name']}
 💰 Price: ₹{plan['price']}
 📆 Validity: {plan['days']} days
-""",
-        reply_markup=kb
-    )
+""", reply_markup=kb)
 
 
 @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/"))
@@ -279,12 +310,7 @@ def handle_link(msg):
     if not prime_active(user) and user.get("free_used", 0) >= total_limit:
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💎 BUY PRIME", callback_data="buy_1month"))
-
-        return bot.reply_to(
-            msg,
-            f"⚠️ Free limit complete\n\n🎁 Used: {total_limit}/{total_limit}\n💎 Prime required",
-            reply_markup=kb
-        )
+        return bot.reply_to(msg, "⚠️ Free limit complete\n\n💎 Prime required", reply_markup=kb)
 
     wait = bot.reply_to(msg, "⏳ Video processing...")
 
@@ -303,13 +329,11 @@ def handle_link(msg):
         })
 
         if not prime_active(user):
-            users_col.update_one(
-                {"user_id": msg.from_user.id},
-                {"$inc": {"free_used": 1}}
-            )
+            users_col.update_one({"user_id": msg.from_user.id}, {"$inc": {"free_used": 1}})
 
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("▶️ PLAY IN BOT", url=watch_url))
+        kb.add(InlineKeyboardButton("▶️ PLAY VIDEO", url=watch_url))
+        kb.add(InlineKeyboardButton("⬇️ DOWNLOAD / OPEN", url=api_data["play_url"]))
 
         bot.edit_message_text(
             chat_id=msg.chat.id,
@@ -318,25 +342,51 @@ def handle_link(msg):
             reply_markup=kb
         )
 
-        try:
-            bot.send_video(
-                msg.chat.id,
-                api_data["play_url"],
-                caption=f"🎬 {api_data['title']}"
-            )
-        except:
-            bot.send_message(
-                msg.chat.id,
-                "⚠️ Telegram direct video play nahi kar paya.\nNeeche button se play karo.",
-                reply_markup=kb
-            )
-
     except Exception as e:
         bot.edit_message_text(
             chat_id=msg.chat.id,
             message_id=wait.message_id,
-            text=f"❌ ERROR\n\n{e}"
+            text=f"❌ ERROR\n\n{str(e)[:1000]}"
         )
+
+
+@app.route("/pay/<razorpay_order_id>")
+def pay_page(razorpay_order_id):
+    order = orders_col.find_one({"razorpay_order_id": razorpay_order_id})
+
+    if not order:
+        return "Order not found", 404
+
+    return f"""
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+<body style="background:#050505;color:white;font-family:Arial;padding:25px;">
+<h2>💎 Prime Payment</h2>
+<p>Amount: ₹{order['price']}</p>
+<p>Validity: {order['days']} days</p>
+<button onclick="payNow()" style="padding:14px 22px;background:#7c3aed;color:white;border:0;border-radius:10px;font-size:18px;">Pay Now</button>
+<script>
+function payNow(){{
+var options={{
+"key":"{RAZORPAY_KEY_ID}",
+"amount":"{order['price'] * 100}",
+"currency":"INR",
+"name":"TeraBox Video Bot",
+"description":"Prime Membership",
+"order_id":"{razorpay_order_id}",
+"handler":function(response){{ alert("Payment successful. Prime will activate automatically."); window.location.href="/"; }},
+"theme":{{"color":"#7c3aed"}}
+}};
+var rzp=new Razorpay(options);
+rzp.open();
+}}
+</script>
+</body>
+</html>
+"""
 
 
 @app.route("/razorpay-webhook", methods=["POST"])
@@ -347,32 +397,17 @@ def webhook():
         if payload.get("event") == "payment.captured":
             payment = payload["payload"]["payment"]["entity"]
             razorpay_order_id = payment["order_id"]
-
             order = orders_col.find_one({"razorpay_order_id": razorpay_order_id})
 
             if order and order.get("status") != "paid":
                 expiry = datetime.utcnow() + timedelta(days=order["days"])
-
                 users_col.update_one(
                     {"user_id": order["user_id"]},
-                    {
-                        "$set": {
-                            "is_prime": True,
-                            "prime_expiry": expiry
-                        }
-                    },
+                    {"$set": {"is_prime": True, "prime_expiry": expiry}},
                     upsert=True
                 )
-
-                orders_col.update_one(
-                    {"_id": order["_id"]},
-                    {"$set": {"status": "paid"}}
-                )
-
-                bot.send_message(
-                    order["user_id"],
-                    f"🎉 Payment Success!\n\n💎 Prime Activated\n📆 Valid: {order['days']} days"
-                )
+                orders_col.update_one({"_id": order["_id"]}, {"$set": {"status": "paid"}})
+                bot.send_message(order["user_id"], f"🎉 Payment Success!\n\n💎 Prime Activated\n📆 Valid: {order['days']} days")
 
         return jsonify({"success": True})
 
@@ -392,39 +427,23 @@ def watch(code):
     title = item.get("title", "TeraBox Video")
 
     return f"""
-<!DOCTYPE html>
 <html>
 <head>
-<title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-body {{
-    margin:0;
-    background:#050505;
-    color:white;
-    font-family:Arial;
-}}
-.box {{
-    padding:15px;
-}}
-video {{
-    width:100%;
-    height:auto;
-    background:#000;
-    border-radius:12px;
-}}
-h2 {{
-    font-size:20px;
-}}
-</style>
+<title>{title}</title>
 </head>
-<body>
-<div class="box">
+<body style="background:#000;color:white;font-family:Arial;padding:15px;">
 <h2>🎬 {title}</h2>
-<video controls autoplay playsinline>
-    <source src="{video_url}">
+<video id="v" controls autoplay playsinline style="width:100%;border-radius:12px;background:#111;">
+<source src="{video_url}">
 </video>
-</div>
+<p id="err" style="color:red;"></p>
+<script>
+const v=document.getElementById("v");
+v.onerror=function(){{document.getElementById("err").innerText="Video play nahi ho raha. API direct MP4/M3U8 URL return nahi kar rahi.";}}
+</script>
+<br><br>
+<a href="{video_url}" style="color:#00ffcc;">Open / Download</a>
 </body>
 </html>
 """
@@ -441,6 +460,5 @@ def run_web():
 
 
 Thread(target=run_web).start()
-
 print("BOT RUNNING...")
 bot.infinity_polling(skip_pending=True)
