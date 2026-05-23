@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+pymongo
+flask
+requests
+razorpay
+gunicorn
