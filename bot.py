@@ -1,18 +1,16 @@
-import os, uuid, requests, razorpay
+import os, uuid, razorpay
 from datetime import datetime, timedelta
 from threading import Thread
 
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
+from urllib.parse import quote_plus
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BASE_URL = os.getenv("BASE_URL")
-
-TERABOX_API_URL = os.getenv("TERABOX_API_URL")
-TERABOX_API_KEY = os.getenv("TERABOX_API_KEY")
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
@@ -83,75 +81,17 @@ def valid_terabox(url):
     )
 
 
-def find_value(data, keys):
-    if isinstance(data, dict):
-        for key in keys:
-            val = data.get(key)
-            if isinstance(val, str) and val.startswith("http"):
-                return val
-
-        for v in data.values():
-            found = find_value(v, keys)
-            if found:
-                return found
-
-    if isinstance(data, list):
-        for item in data:
-            found = find_value(item, keys)
-            if found:
-                return found
-
-    return None
+def build_player_url(original_url):
+    return "https://itera.codbreaker.com/index.php?url=" + quote_plus(original_url)
 
 
 def call_api(url):
-    headers = {
-        "X-API-Key": TERABOX_API_KEY,
-        "Authorization": f"Bearer {TERABOX_API_KEY}",
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    r = requests.get(
-        TERABOX_API_URL,
-        params={"url": url},
-        headers=headers,
-        timeout=60
-    )
-
-    r.raise_for_status()
-    data = r.json()
-
-    playback_url = find_value(data, [
-        "playback_url",
-        "play_url",
-        "stream_url",
-        "video_url",
-        "direct_url"
-    ])
-
-    download_url = find_value(data, [
-        "download_url",
-        "download",
-        "file_url"
-    ])
-
-    title = "TeraBox Video"
-    if isinstance(data, dict):
-        title = (
-            data.get("title")
-            or data.get("name")
-            or data.get("filename")
-            or title
-        )
-
-    if not playback_url and not download_url:
-        raise Exception(f"API response me playback_url/download_url nahi mila: {str(data)[:700]}")
+    player_url = build_player_url(url)
 
     return {
-        "title": title,
-        "playback_url": playback_url or download_url,
-        "download_url": download_url or playback_url,
-        "raw": data
+        "title": "TeraBox Video",
+        "playback_url": player_url,
+        "download_url": player_url
     }
 
 
@@ -175,7 +115,7 @@ def start(msg):
 🔥 𝗧𝗘𝗥𝗔𝗕𝗢𝗫 𝗧𝗢 𝗩𝗜𝗗𝗘𝗢 𝗕𝗢𝗧 🔥
 
 🎬 TeraBox link भेजो
-▶️ Video player link मिलेगा
+▶️ Site player पर video open होगा
 
 🎁 Free Used: {user.get("free_used", 0)}/{total_limit}
 👥 Referral Bonus: +{user.get("referral_bonus", 0)}
@@ -188,7 +128,6 @@ def start(msg):
 /prime - Buy Prime
 /me - My Account
 /help - Help
-/apitest LINK - API Test
 """)
 
 
@@ -198,8 +137,9 @@ def help_cmd(msg):
 📌 HOW TO USE
 
 1️⃣ TeraBox link भेजो
-2️⃣ Bot video process करेगा
-3️⃣ Play Video button दबाओ
+2️⃣ Bot process करेगा
+3️⃣ Play button दबाओ
+4️⃣ Video site player पर open होगा
 
 💎 Prime:
 /prime
@@ -217,40 +157,6 @@ def me(msg):
         text = f"🎁 Free Used: {user.get('free_used', 0)}/{total_limit}\n👥 Referral Bonus: +{user.get('referral_bonus', 0)}"
 
     bot.reply_to(msg, text)
-
-
-@bot.message_handler(commands=["apitest"])
-def apitest(msg):
-    parts = msg.text.split(maxsplit=1)
-
-    if len(parts) < 2:
-        return bot.reply_to(msg, "Use: /apitest TERABOX_LINK")
-
-    wait = bot.reply_to(msg, "⏳ API testing...")
-
-    try:
-        api_data = call_api(parts[1])
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"""
-✅ API OK
-
-🎬 Title: {api_data['title']}
-
-▶️ Playback:
-{api_data['playback_url'][:500]}
-
-⬇️ Download:
-{api_data['download_url'][:500]}
-"""
-        )
-    except Exception as e:
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"❌ API TEST FAILED\n\n{str(e)[:1000]}"
-        )
 
 
 @bot.message_handler(commands=["prime"])
@@ -326,46 +232,39 @@ def handle_link(msg):
         kb.add(InlineKeyboardButton("💎 BUY PRIME", callback_data="buy_1month"))
         return bot.reply_to(msg, "⚠️ Free limit complete\n\n💎 Prime required", reply_markup=kb)
 
-    wait = bot.reply_to(msg, "⏳ Video processing...")
+    wait = bot.reply_to(msg, "⏳ Link processing...")
 
-    try:
-        api_data = call_api(text)
+    api_data = call_api(text)
 
-        code = str(uuid.uuid4())[:8]
-        watch_url = f"{BASE_URL}/watch/{code}"
+    code = str(uuid.uuid4())[:8]
 
-        links_col.insert_one({
-            "code": code,
-            "user_id": msg.from_user.id,
-            "title": api_data["title"],
-            "playback_url": api_data["playback_url"],
-            "download_url": api_data["download_url"],
-            "created_at": datetime.utcnow()
-        })
+    links_col.insert_one({
+        "code": code,
+        "user_id": msg.from_user.id,
+        "title": api_data["title"],
+        "playback_url": api_data["playback_url"],
+        "download_url": api_data["download_url"],
+        "original_url": text,
+        "created_at": datetime.utcnow()
+    })
 
-        if not prime_active(user):
-            users_col.update_one(
-                {"user_id": msg.from_user.id},
-                {"$inc": {"free_used": 1}}
-            )
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("▶️ PLAY VIDEO", url=watch_url))
-        kb.add(InlineKeyboardButton("⬇️ DOWNLOAD", url=api_data["download_url"]))
-
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"✅ Video Ready!\n\n🎬 {api_data['title']}",
-            reply_markup=kb
+    if not prime_active(user):
+        users_col.update_one(
+            {"user_id": msg.from_user.id},
+            {"$inc": {"free_used": 1}}
         )
 
-    except Exception as e:
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"❌ ERROR\n\n{str(e)[:1000]}"
-        )
+    watch_url = f"{BASE_URL}/watch/{code}"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("▶️ PLAY VIDEO", url=watch_url))
+
+    bot.edit_message_text(
+        chat_id=msg.chat.id,
+        message_id=wait.message_id,
+        text="✅ Link Ready!\n\n🎬 TeraBox Video",
+        reply_markup=kb
+    )
 
 
 @app.route("/pay/<razorpay_order_id>")
@@ -451,40 +350,7 @@ def watch(code):
     if not item:
         return "Video not found", 404
 
-    video_url = item["playback_url"]
-    download_url = item.get("download_url", video_url)
-    title = item.get("title", "TeraBox Video")
-
-    return f"""
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
-</head>
-<body style="background:#000;color:white;font-family:Arial;padding:15px;">
-<h2>🎬 {title}</h2>
-
-<video id="v" controls autoplay playsinline style="width:100%;border-radius:12px;background:#111;">
-<source src="{video_url}">
-</video>
-
-<p id="err" style="color:red;"></p>
-
-<script>
-const v=document.getElementById("v");
-v.onerror=function(){{
-document.getElementById("err").innerText="Video play nahi ho raha. Download button use karo.";
-}}
-</script>
-
-<br><br>
-<a href="{download_url}" style="display:block;background:#7c3aed;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;">
-⬇️ Download / Open
-</a>
-
-</body>
-</html>
-"""
+    return redirect(item["playback_url"])
 
 
 @app.route("/")
