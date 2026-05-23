@@ -136,8 +136,8 @@ def valid_terabox(url):
         "terabox" in text
         or "1024tera" in text
         or "terafileshare" in text
+        or "terasharefile" in text
     )
-
 
 def call_api(url):
 
