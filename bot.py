@@ -5,7 +5,7 @@ from threading import Thread
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
@@ -83,22 +83,21 @@ def valid_terabox(url):
     )
 
 
-def find_video_url(data):
+def find_value(data, keys):
     if isinstance(data, dict):
-        for key in ["play_url", "stream_url", "direct_url", "video_url", "download_url", "url", "link"]:
+        for key in keys:
             val = data.get(key)
             if isinstance(val, str) and val.startswith("http"):
                 return val
 
-        for key in ["data", "result", "file", "video"]:
-            val = data.get(key)
-            found = find_video_url(val)
+        for v in data.values():
+            found = find_value(v, keys)
             if found:
                 return found
 
     if isinstance(data, list):
         for item in data:
-            found = find_video_url(item)
+            found = find_value(item, keys)
             if found:
                 return found
 
@@ -107,64 +106,52 @@ def find_video_url(data):
 
 def call_api(url):
     headers = {
-        "Authorization": f"Bearer {TERABOX_API_KEY}",
         "X-API-Key": TERABOX_API_KEY,
-        "User-Agent": "Mozilla/5.0",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {TERABOX_API_KEY}",
+        "User-Agent": "Mozilla/5.0"
     }
 
-    try:
-        attempts = [
-            lambda: requests.post(
-                TERABOX_API_URL,
-                json={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
-                headers=headers,
-                timeout=25
-            ),
-            lambda: requests.post(
-                TERABOX_API_URL,
-                data={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=25
-            ),
-            lambda: requests.get(
-                TERABOX_API_URL,
-                params={"url": url, "link": url, "api_key": TERABOX_API_KEY, "key": TERABOX_API_KEY},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=25
-            )
-        ]
+    r = requests.get(
+        TERABOX_API_URL,
+        params={"url": url},
+        headers=headers,
+        timeout=60
+    )
 
-        for fn in attempts:
-            try:
-                r = fn()
-                if r.status_code >= 400:
-                    continue
+    r.raise_for_status()
+    data = r.json()
 
-                data = r.json()
-                play_url = find_video_url(data)
+    playback_url = find_value(data, [
+        "playback_url",
+        "play_url",
+        "stream_url",
+        "video_url",
+        "direct_url"
+    ])
 
-                if play_url:
-                    title = "TeraBox Video"
-                    if isinstance(data, dict):
-                        title = data.get("title") or data.get("name") or data.get("filename") or title
+    download_url = find_value(data, [
+        "download_url",
+        "download",
+        "file_url"
+    ])
 
-                    return {
-                        "title": title,
-                        "play_url": play_url,
-                        "mode": "api"
-                    }
+    title = "TeraBox Video"
+    if isinstance(data, dict):
+        title = (
+            data.get("title")
+            or data.get("name")
+            or data.get("filename")
+            or title
+        )
 
-            except:
-                continue
-
-    except:
-        pass
+    if not playback_url and not download_url:
+        raise Exception(f"API response me playback_url/download_url nahi mila: {str(data)[:700]}")
 
     return {
-        "title": "Open on TeraBox",
-        "play_url": url,
-        "mode": "site"
+        "title": title,
+        "playback_url": playback_url or download_url,
+        "download_url": download_url or playback_url,
+        "raw": data
     }
 
 
@@ -187,8 +174,8 @@ def start(msg):
     bot.reply_to(msg, f"""
 🔥 𝗧𝗘𝗥𝗔𝗕𝗢𝗫 𝗧𝗢 𝗩𝗜𝗗𝗘𝗢 𝗕𝗢𝗧 🔥
 
-🎬 TeraBox link bhejo
-▶️ Video open link milega
+🎬 TeraBox link भेजो
+▶️ Video player link मिलेगा
 
 🎁 Free Used: {user.get("free_used", 0)}/{total_limit}
 👥 Referral Bonus: +{user.get("referral_bonus", 0)}
@@ -201,7 +188,6 @@ def start(msg):
 /prime - Buy Prime
 /me - My Account
 /help - Help
-/debug - Bot Check
 /apitest LINK - API Test
 """)
 
@@ -211,57 +197,13 @@ def help_cmd(msg):
     bot.reply_to(msg, """
 📌 HOW TO USE
 
-1️⃣ TeraBox link bhejo
-2️⃣ Bot process karega
-3️⃣ Play button par click karo
-
-⚠️ Agar API fail ho, original TeraBox site open hogi.
+1️⃣ TeraBox link भेजो
+2️⃣ Bot video process करेगा
+3️⃣ Play Video button दबाओ
 
 💎 Prime:
 /prime
 """)
-
-
-@bot.message_handler(commands=["debug"])
-def debug(msg):
-    bot.reply_to(
-        msg,
-        f"✅ Bot alive\n\nBASE_URL={BASE_URL}\nAPI_URL={TERABOX_API_URL}"
-    )
-
-
-@bot.message_handler(commands=["apitest"])
-def apitest(msg):
-    parts = msg.text.split(maxsplit=1)
-
-    if len(parts) < 2:
-        return bot.reply_to(msg, "Use: /apitest TERABOX_LINK")
-
-    wait = bot.reply_to(msg, "⏳ API testing...")
-
-    try:
-        api_data = call_api(parts[1])
-
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"""
-✅ API TEST RESULT
-
-Mode: {api_data['mode']}
-Title: {api_data['title']}
-
-URL:
-{api_data['play_url'][:500]}
-"""
-        )
-
-    except Exception as e:
-        bot.edit_message_text(
-            chat_id=msg.chat.id,
-            message_id=wait.message_id,
-            text=f"❌ API TEST FAILED\n\n{str(e)[:1000]}"
-        )
 
 
 @bot.message_handler(commands=["me"])
@@ -275,6 +217,40 @@ def me(msg):
         text = f"🎁 Free Used: {user.get('free_used', 0)}/{total_limit}\n👥 Referral Bonus: +{user.get('referral_bonus', 0)}"
 
     bot.reply_to(msg, text)
+
+
+@bot.message_handler(commands=["apitest"])
+def apitest(msg):
+    parts = msg.text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        return bot.reply_to(msg, "Use: /apitest TERABOX_LINK")
+
+    wait = bot.reply_to(msg, "⏳ API testing...")
+
+    try:
+        api_data = call_api(parts[1])
+        bot.edit_message_text(
+            chat_id=msg.chat.id,
+            message_id=wait.message_id,
+            text=f"""
+✅ API OK
+
+🎬 Title: {api_data['title']}
+
+▶️ Playback:
+{api_data['playback_url'][:500]}
+
+⬇️ Download:
+{api_data['download_url'][:500]}
+"""
+        )
+    except Exception as e:
+        bot.edit_message_text(
+            chat_id=msg.chat.id,
+            message_id=wait.message_id,
+            text=f"❌ API TEST FAILED\n\n{str(e)[:1000]}"
+        )
 
 
 @bot.message_handler(commands=["prime"])
@@ -341,7 +317,7 @@ def handle_link(msg):
     user = get_user(msg.from_user)
 
     if not valid_terabox(text):
-        return bot.reply_to(msg, "❌ Valid TeraBox link bhejo.")
+        return bot.reply_to(msg, "❌ Valid TeraBox link भेजो.")
 
     total_limit = FREE_LIMIT + user.get("referral_bonus", 0)
 
@@ -350,7 +326,7 @@ def handle_link(msg):
         kb.add(InlineKeyboardButton("💎 BUY PRIME", callback_data="buy_1month"))
         return bot.reply_to(msg, "⚠️ Free limit complete\n\n💎 Prime required", reply_markup=kb)
 
-    wait = bot.reply_to(msg, "⏳ Processing...")
+    wait = bot.reply_to(msg, "⏳ Video processing...")
 
     try:
         api_data = call_api(text)
@@ -362,8 +338,8 @@ def handle_link(msg):
             "code": code,
             "user_id": msg.from_user.id,
             "title": api_data["title"],
-            "play_url": api_data["play_url"],
-            "mode": api_data["mode"],
+            "playback_url": api_data["playback_url"],
+            "download_url": api_data["download_url"],
             "created_at": datetime.utcnow()
         })
 
@@ -374,19 +350,13 @@ def handle_link(msg):
             )
 
         kb = InlineKeyboardMarkup()
-
-        if api_data["mode"] == "api":
-            kb.add(InlineKeyboardButton("▶️ PLAY VIDEO", url=watch_url))
-            kb.add(InlineKeyboardButton("⬇️ DOWNLOAD / OPEN", url=api_data["play_url"]))
-            msg_text = f"✅ Video Ready!\n\n🎬 {api_data['title']}"
-        else:
-            kb.add(InlineKeyboardButton("🌐 OPEN ON TERABOX", url=api_data["play_url"]))
-            msg_text = "✅ Link Ready!\n\n⚠️ API direct stream nahi de rahi, isliye site par open hoga."
+        kb.add(InlineKeyboardButton("▶️ PLAY VIDEO", url=watch_url))
+        kb.add(InlineKeyboardButton("⬇️ DOWNLOAD", url=api_data["download_url"]))
 
         bot.edit_message_text(
             chat_id=msg.chat.id,
             message_id=wait.message_id,
-            text=msg_text,
+            text=f"✅ Video Ready!\n\n🎬 {api_data['title']}",
             reply_markup=kb
         )
 
@@ -481,10 +451,8 @@ def watch(code):
     if not item:
         return "Video not found", 404
 
-    if item.get("mode") == "site":
-        return redirect(item["play_url"])
-
-    video_url = item["play_url"]
+    video_url = item["playback_url"]
+    download_url = item.get("download_url", video_url)
     title = item.get("title", "TeraBox Video")
 
     return f"""
@@ -495,16 +463,25 @@ def watch(code):
 </head>
 <body style="background:#000;color:white;font-family:Arial;padding:15px;">
 <h2>🎬 {title}</h2>
+
 <video id="v" controls autoplay playsinline style="width:100%;border-radius:12px;background:#111;">
 <source src="{video_url}">
 </video>
+
 <p id="err" style="color:red;"></p>
+
 <script>
 const v=document.getElementById("v");
-v.onerror=function(){{document.getElementById("err").innerText="Video play nahi ho raha. API direct MP4/M3U8 URL return nahi kar rahi.";}}
+v.onerror=function(){{
+document.getElementById("err").innerText="Video play nahi ho raha. Download button use karo.";
+}}
 </script>
+
 <br><br>
-<a href="{video_url}" style="color:#00ffcc;">Open / Download</a>
+<a href="{download_url}" style="display:block;background:#7c3aed;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;">
+⬇️ Download / Open
+</a>
+
 </body>
 </html>
 """
